@@ -1,107 +1,99 @@
-const { Client, GatewayIntentBits, Events } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMessageReactions,
   ]
 });
 
-const WEBHOOK_URL = 'https://whyjordkoychcyyevyrl.supabase.co/functions/v1/discord-webhook';
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
-const BOT_TOKEN = process.env.BOT_TOKEN;
 
-// IDs des salons à surveiller (à personnaliser)
-const CONTENT_REVIEW_CHANNEL = process.env.CONTENT_REVIEW_CHANNEL_ID;
-
-async function sendToWebhook(data) {
-  try {
-    const response = await fetch(WEBHOOK_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-webhook-secret': WEBHOOK_SECRET
-      },
-      body: JSON.stringify(data)
-    });
-    const result = await response.json();
-    console.log('Webhook response:', result);
-    return result;
-  } catch (error) {
-    console.error('Webhook error:', error);
-  }
+async function callWebhook(data) {
+  const response = await fetch(WEBHOOK_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-webhook-secret': WEBHOOK_SECRET
+    },
+    body: JSON.stringify(data)
+  });
+  return response.json();
 }
 
-client.once(Events.ClientReady, () => {
+client.on('ready', () => {
   console.log(`Bot connecté en tant que ${client.user.tag}`);
 });
 
-// Sync member quand ils rejoignent
-client.on(Events.GuildMemberAdd, async (member) => {
-  await sendToWebhook({
-    action: 'sync_member',
-    discord_id: member.user.id,
-    discord_username: member.user.username,
-    discord_avatar: member.user.displayAvatarURL()
-  });
-});
-
-// Détecte les messages dans le salon ContentReview
-client.on(Events.MessageCreate, async (message) => {
+client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
-  // ContentReview submission
-  if (message.channel.id === CONTENT_REVIEW_CHANNEL && message.content.includes('http')) {
-    await sendToWebhook({
+  // Détecter les liens
+  const urlPattern = /https?:\/\/[^\s]+/i;
+  if (urlPattern.test(message.content)) {
+    console.log(`Lien détecté de ${message.author.username}`);
+    const result = await callWebhook({
       action: 'add_points',
       discord_id: message.author.id,
-      discord_username: message.author.username,
-      discord_avatar: message.author.displayAvatarURL(),
-      action_type: 'content_review',
-      description: `Soumission ContentReview`
+      username: message.author.username,
+      avatar: message.author.displayAvatarURL(),
+      action_type: 'content_share',
+      description: `Partage dans #${message.channel.name}`
     });
-    console.log(`Points ContentReview ajoutés pour ${message.author.username}`);
-  }
-
-  // Commandes manuelles (pour les admins)
-  if (message.content.startsWith('!points')) {
-    const args = message.content.split(' ');
-    const mention = message.mentions.users.first();
-    const actionType = args[2];
-    
-    if (mention && actionType) {
-      await sendToWebhook({
-        action: 'add_points',
-        discord_id: mention.id,
-        discord_username: mention.username,
-        discord_avatar: mention.displayAvatarURL(),
-        action_type: actionType,
-        description: args.slice(3).join(' ') || `Points ajoutés par ${message.author.username}`
-      });
-      message.reply(`✅ Points "${actionType}" ajoutés à ${mention.username}`);
+    console.log('Webhook response:', result);
+    try {
+      await message.react('✅');
+    } catch (e) {
+      console.log('Impossible de réagir');
     }
   }
 
-  // Commande leaderboard
+  // Commande !leaderboard
   if (message.content === '!leaderboard') {
-    const result = await sendToWebhook({ action: 'get_leaderboard' });
-    if (result?.leaderboard) {
-      const lb = result.leaderboard.map((m, i) => 
-        `${i + 1}. **${m.discord_username}** - ${m.total_points} pts`
-      ).join('\n');
-      message.reply(`🏆 **Leaderboard**\n${lb}`);
+    const result = await callWebhook({ action: 'get_leaderboard' });
+    console.log('Webhook response:', result);
+    if (result.success) {
+      const embed = new EmbedBuilder()
+        .setTitle('🏆 Classement')
+        .setColor(0x2d5a3d);
+      result.leaderboard.slice(0, 10).forEach((member, i) => {
+        embed.addFields({
+          name: `${i + 1}. ${member.discord_username}`,
+          value: `${member.total_points} pts | 🎟️ ${member.lottery_tickets}`,
+          inline: false
+        });
+      });
+      message.channel.send({ embeds: [embed] });
     }
   }
 
-  // Commande tickets
+  // Commande !points
+  if (message.content === '!points') {
+    const result = await callWebhook({
+      action: 'sync_member',
+      discord_id: message.author.id,
+      username: message.author.username,
+      avatar: message.author.displayAvatarURL()
+    });
+    if (result.success) {
+      message.channel.send(`💰 **${message.author.username}** : ${result.member.total_points} points | 🎟️ ${result.member.lottery_tickets} tickets`);
+    }
+  }
+
+  // Commande !tickets
   if (message.content === '!tickets') {
-    await sendToWebhook({
+    const result = await callWebhook({
       action: 'convert_to_tickets',
       discord_id: message.author.id
     });
+    if (result.success) {
+      message.channel.send(`🎟️ Conversion réussie! Tu as maintenant ${result.lottery_tickets} tickets.`);
+    } else {
+      message.channel.send(`❌ ${result.error || 'Erreur'}`);
+    }
   }
 });
 
-client.login(BOT_TOKEN);
+client.login(process.env.DISCORD_TOKEN);
