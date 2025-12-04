@@ -9,9 +9,11 @@ WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET')
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')
 
-# Bot setup
+# Bot setup avec intents pour les forums
 intents = discord.Intents.default()
 intents.message_content = True
+intents.guilds = True
+intents.messages = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 async def call_webhook(data):
@@ -32,18 +34,25 @@ async def on_message(message):
     if message.author.bot:
         return
     
-    # Détecter les liens de réseaux sociaux
-    url_pattern = r'https?://(?:www\.)?(youtube|youtu\.be|tiktok|instagram|twitter|x|linkedin)[\./]\S+'
+    print(f"Message reçu: {message.content[:50]}...")
+    
+    # Détecter les liens
+    url_pattern = r'https?://[^\s]+'
     if re.search(url_pattern, message.content, re.IGNORECASE):
-        await call_webhook({
+        print(f"Lien détecté de {message.author.name}")
+        result = await call_webhook({
             "action": "add_points",
             "discord_id": str(message.author.id),
             "username": message.author.name,
             "avatar": str(message.author.avatar.url) if message.author.avatar else None,
             "action_type": "content_share",
-            "description": f"Partage dans #{message.channel.name}"
+            "description": f"Partage de contenu"
         })
-        await message.add_reaction("✅")
+        print(f"Webhook result: {result}")
+        try:
+            await message.add_reaction("✅")
+        except:
+            pass
     
     await bot.process_commands(message)
 
@@ -84,3 +93,4 @@ async def tickets(ctx):
         await ctx.send(f"❌ {result.get('error', 'Erreur')}")
 
 bot.run(DISCORD_TOKEN)
+
