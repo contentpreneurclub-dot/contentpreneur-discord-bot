@@ -1,11 +1,19 @@
 const { Client, GatewayIntentBits, EmbedBuilder } = require("discord.js");
+const { createClient } = require("@supabase/supabase-js");
 
 // ============================================
 // CONFIGURATION
 // ============================================
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
+const DISCORD_TOKEN = process.env.DISCORD_BOT_TOKEN || process.env.DISCORD_TOKEN;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+
+// Supabase for live stats
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabase = SUPABASE_URL && SUPABASE_SERVICE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+  : null;
 
 // Hub Analytics API
 const HUB_API_URL = process.env.HUB_API_URL || "https://contentpreneur-hub.vercel.app";
@@ -101,11 +109,58 @@ async function flushEvents() {
 setInterval(flushEvents, BUFFER_FLUSH_INTERVAL);
 
 // ============================================
+// LIVE STATS FOR HUB WIDGET
+// ============================================
+async function updateLiveStats() {
+  if (!supabase) return;
+
+  try {
+    const guild = client.guilds.cache.first();
+    if (!guild) return;
+
+    // Get voice channel stats
+    const voiceChannels = guild.channels.cache.filter(c => c.isVoiceBased());
+    let voiceCount = 0;
+    const activeChannelNames = [];
+
+    voiceChannels.forEach(channel => {
+      if (channel.members && channel.members.size > 0) {
+        voiceCount += channel.members.size;
+        activeChannelNames.push(channel.name);
+      }
+    });
+
+    // Upsert stats to Supabase
+    await supabase
+      .from("hub_discord_stats")
+      .upsert({
+        id: 'live',
+        voice_count: voiceCount,
+        total_members: guild.memberCount,
+        online_estimate: Math.floor(guild.memberCount * 0.08),
+        active_voice_channels: activeChannelNames,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'id' });
+
+    console.log(`📊 Stats updated: ${voiceCount} in voice, ${guild.memberCount} total`);
+  } catch (error) {
+    console.error("Error updating live stats:", error);
+  }
+}
+
+// ============================================
 // READY EVENT
 // ============================================
 client.on("ready", () => {
   console.log(`🤖 Bot connecté en tant que ${client.user.tag}`);
   console.log(`📊 Hub Analytics: ${HUB_API_KEY ? "Activé" : "Désactivé"}`);
+  console.log(`📈 Live Stats: ${supabase ? "Activé" : "Désactivé"}`);
+
+  // Initial stats update
+  updateLiveStats();
+
+  // Update stats every 30 seconds
+  setInterval(updateLiveStats, 30000);
 });
 
 // ============================================
@@ -255,6 +310,9 @@ client.on("voiceStateUpdate", (oldState, newState) => {
       channel_name: newState.channel.name,
       guild_id: guildId,
     });
+
+    // Update live stats for Hub widget
+    updateLiveStats();
   }
 
   // User left voice channel
@@ -277,6 +335,9 @@ client.on("voiceStateUpdate", (oldState, newState) => {
     });
 
     voiceSessions.delete(userId);
+
+    // Update live stats for Hub widget
+    updateLiveStats();
   }
 
   // User switched channels
